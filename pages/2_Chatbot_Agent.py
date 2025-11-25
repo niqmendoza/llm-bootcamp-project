@@ -1,8 +1,8 @@
 """
-Chatbot Agent
+Chatbot Agent with Multiple Tools - SOLUTION
 
-An AI agent that can search the web using Tavily to answer your questions
-with current, real-time information.
+This solution adds Wikipedia and ArXiv tools to the agent.
+The agent can now search the web, look up encyclopedia articles, and find academic papers.
 """
 
 
@@ -22,6 +22,16 @@ from langchain_openai import ChatOpenAI
 # TavilySearchResults: Tool for searching the web
 from langchain_community.tools.tavily_search import TavilySearchResults
 
+# ✨ NEW: Wikipedia and ArXiv tools
+# WikipediaQueryRun: Tool for searching Wikipedia encyclopedia
+# ArxivQueryRun: Tool for searching academic papers on ArXiv
+from langchain_community.tools import WikipediaQueryRun, ArxivQueryRun
+
+# ✨ NEW: API wrappers for Wikipedia and ArXiv
+# WikipediaAPIWrapper: Handles Wikipedia API calls
+# ArxivAPIWrapper: Handles ArXiv API calls
+from langchain_community.utilities import WikipediaAPIWrapper, ArxivAPIWrapper
+
 # create_react_agent: Creates an agent that can reason and use tools
 from langgraph.prebuilt import create_react_agent
 
@@ -31,13 +41,13 @@ from langgraph.prebuilt import create_react_agent
 # =========================================================
 
 st.set_page_config(
-    page_title="Chatbot Agent",
+    page_title="Multi-Tool Chatbot Agent",
     page_icon="🔍",
     layout="wide"  # Use full width of browser
 )
 
-st.title("🔍 Chatbot Agent")
-st.caption("AI agent with web search capabilities")
+st.title("🔍 Multi-Tool Chatbot Agent")
+st.caption("AI agent with web search, Wikipedia, and ArXiv capabilities")
 
 
 # =========================================================
@@ -73,6 +83,13 @@ with st.sidebar:
         st.success("✅ Tavily Connected")
     else:
         st.warning("⚠️ Tavily Not Connected")
+    
+    # ✨ NEW: Show available tools
+    if st.session_state.openai_key and st.session_state.tavily_key:
+        st.subheader("🛠️ Available Tools")
+        st.write("✅ **Tavily Search** - Web search")
+        st.write("✅ **Wikipedia** - Encyclopedia")
+        st.write("✅ **ArXiv** - Research papers")
     
     if st.session_state.openai_key or st.session_state.tavily_key:
         if st.button("Change API Keys"):
@@ -151,11 +168,36 @@ if not st.session_state.agent:
         temperature=0  # 0 = deterministic, 1 = creative
     )
     
-    # Create Tavily search tool
+    # Create Tavily search tool (for web search)
     search_tool = TavilySearchResults(max_results=3)
     
-    # Create agent with search capability
-    st.session_state.agent = create_react_agent(llm, [search_tool])
+    # ✨ NEW: Create Wikipedia tool (for encyclopedia articles)
+    wikipedia = WikipediaQueryRun(
+        api_wrapper=WikipediaAPIWrapper(
+            top_k_results=2,  # Return top 2 results
+            doc_content_chars_max=500  # Limit content length
+        ),
+        name="wikipedia",
+        description="""Search Wikipedia for encyclopedia articles, historical information, 
+        biographies, and general knowledge. Best for: 'Who was...', 'What is...', 
+        'History of...', 'Explain...' queries."""
+    )
+    
+    # ✨ NEW: Create ArXiv tool (for academic papers)
+    arxiv = ArxivQueryRun(
+        api_wrapper=ArxivAPIWrapper(
+            top_k_results=2,  # Return top 2 results
+            doc_content_chars_max=500  # Limit content length
+        ),
+        name="arxiv",
+        description="""Search ArXiv for academic papers, research articles, and scientific 
+        publications. Best for: 'Latest research on...', 'Papers about...', 
+        'Scientific studies on...' queries."""
+    )
+    
+    # ✨ MODIFIED: Create agent with all three tools
+    tools = [search_tool, wikipedia, arxiv]
+    st.session_state.agent = create_react_agent(llm, tools)
 
 
 # =========================================================
