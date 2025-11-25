@@ -1,8 +1,12 @@
 """
-Chat with your Data
+Chat with your Data - Agentic RAG SOLUTION
 
-Upload PDF documents and ask questions about them. The AI will search through
-your documents and provide answers based on the content.
+This solution adds "agentic" capabilities to RAG:
+- Agent decides if it needs to search documents
+- Agent grades if retrieved documents are relevant
+- Agent can rewrite questions for better results
+
+This is called "Agentic RAG" - RAG with decision-making!
 """
 
 
@@ -32,19 +36,30 @@ from langchain_community.vectorstores import FAISS
 # RecursiveCharacterTextSplitter: Splits long documents into smaller chunks
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# ✨ NEW: LangGraph tools for building agentic workflows
+# StateGraph: Tool for building workflows with state management
+# START, END: Special markers for workflow beginning and end
+from langgraph.graph import StateGraph, START, END
+
+# ✨ NEW: TypedDict for defining state structure
+from typing_extensions import TypedDict
+
+# ✨ NEW: Literal for specifying exact string values
+from typing import Literal
+
 
 # =========================================================
 # PAGE SETUP
 # =========================================================
 
 st.set_page_config(
-    page_title="Chat with Documents",
+    page_title="Agentic RAG",
     page_icon="📚",
     layout="wide"  # Use full width of browser
 )
 
-st.title("📚 Chat with your Data")
-st.caption("Ask questions about your PDF documents")
+st.title("📚 Chat with your Data (Agentic RAG)")
+st.caption("AI agent that intelligently searches and answers from your documents")
 
 
 # =========================================================
@@ -66,6 +81,10 @@ if "rag_messages" not in st.session_state:
 if "processed_files" not in st.session_state:
     st.session_state.processed_files = []  # Track which files we've processed
 
+# ✨ NEW: Store the agentic RAG workflow
+if "rag_agent" not in st.session_state:
+    st.session_state.rag_agent = None
+
 
 # =========================================================
 # SIDEBAR
@@ -76,11 +95,21 @@ with st.sidebar:
     
     if st.session_state.openai_key:
         st.success("✅ OpenAI Connected")
+        
+        # ✨ NEW: Show agent capabilities
+        if st.session_state.rag_agent:
+            st.subheader("🤖 Agent Capabilities")
+            st.write("✅ **Search Documents**")
+            st.write("✅ **Grade Relevance**")
+            st.write("✅ **Rewrite Questions**")
+            st.write("✅ **Generate Answers**")
+        
         if st.button("Change API Keys"):
             # Reset everything to start fresh
             st.session_state.openai_key = ""
             st.session_state.vector_store = None
             st.session_state.rag_messages = []
+            st.session_state.rag_agent = None  # ✨ NEW: Reset agent
             st.rerun()
     else:
         st.warning("⚠️ Not Connected")
@@ -162,8 +191,118 @@ if uploaded_files:
             # Reset chat and update processed files
             st.session_state.rag_messages = []
             st.session_state.processed_files = current_files
+            st.session_state.rag_agent = None  # ✨ NEW: Reset agent when docs change
             
             st.success(f"✅ Processed {len(uploaded_files)} document(s)!")
+
+
+# =========================================================
+# ✨ NEW BLOCK: CREATE AGENTIC RAG WORKFLOW
+# =========================================================
+# This is the new code that adds agentic capabilities
+
+if st.session_state.vector_store and not st.session_state.rag_agent:
+    
+    # Define state structure (what information flows through the workflow)
+    class AgentState(TypedDict):
+        question: str  # User's question
+        documents: list  # Retrieved documents
+        generation: str  # Generated answer
+        steps: list  # Track what the agent does
+    
+    # Node 1: Retrieve documents
+    def retrieve_documents(state: AgentState):
+        """Search documents for relevant information."""
+        question = state["question"]
+        retriever = st.session_state.vector_store.as_retriever()
+        docs = retriever.invoke(question)
+        
+        return {
+            "documents": docs,
+            "steps": state.get("steps", []) + ["📚 Retrieved documents"]
+        }
+    
+    # Node 2: Grade document relevance
+    def grade_documents(state: AgentState) -> Literal["generate", "rewrite"]:
+        """Check if retrieved documents are actually relevant."""
+        question = state["question"]
+        docs = state["documents"]
+        
+        if not docs:
+            return "generate"
+        
+        # Simple relevance check using LLM
+        prompt = f"""Are these documents relevant to the question: "{question}"?
+        
+Documents: {docs[0].page_content[:500]}
+
+Answer with just 'yes' or 'no'."""
+        
+        response = st.session_state.llm.invoke(prompt)
+        is_relevant = "yes" in response.content.lower()
+        
+        return "generate" if is_relevant else "rewrite"
+    
+    # Node 3: Rewrite question
+    def rewrite_question(state: AgentState):
+        """Rewrite question for better search results."""
+        question = state["question"]
+        
+        rewrite_prompt = f"Rewrite this question to be more specific and searchable: {question}"
+        new_question = st.session_state.llm.invoke(rewrite_prompt).content
+        
+        return {
+            "question": new_question,
+            "steps": state["steps"] + [f"🔄 Rewrote question: {new_question}"]
+        }
+    
+    # Node 4: Generate answer
+    def generate_answer(state: AgentState):
+        """Generate final answer from documents."""
+        question = state["question"]
+        docs = state["documents"]
+        
+        if not docs:
+            return {
+                "generation": "I couldn't find relevant information in the documents.",
+                "steps": state["steps"] + ["❌ No relevant documents found"]
+            }
+        
+        # Combine documents into context
+        context = "\n\n---\n\n".join(doc.page_content for doc in docs[:5])
+        
+        # Generate answer
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Answer the question using ONLY the provided context. Be concise and accurate."),
+            ("human", "Question: {question}\n\nContext: {context}\n\nAnswer:")
+        ])
+        
+        response = st.session_state.llm.invoke(
+            prompt.format_messages(question=question, context=context)
+        )
+        
+        return {
+            "generation": response.content,
+            "steps": state["steps"] + ["💬 Generated answer"]
+        }
+    
+    # Build the workflow graph
+    workflow = StateGraph(AgentState)
+    
+    # Add nodes
+    workflow.add_node("retrieve", retrieve_documents)
+    workflow.add_node("grade", grade_documents)
+    workflow.add_node("rewrite", rewrite_question)
+    workflow.add_node("generate", generate_answer)
+    
+    # Define the flow
+    workflow.add_edge(START, "retrieve")
+    workflow.add_conditional_edges("retrieve", grade_documents)
+    workflow.add_edge("rewrite", "retrieve")  # After rewrite, retrieve again
+    workflow.add_edge("generate", END)
+    
+    # Compile and save
+    st.session_state.rag_agent = workflow.compile()
 
 
 # =========================================================
@@ -190,33 +329,26 @@ if st.session_state.vector_store:
         with st.chat_message("user"):
             st.write(user_input)
         
-        # Generate response
+        # ✨ MODIFIED: Generate response using agentic workflow
         with st.chat_message("assistant"):
-            with st.spinner("Searching documents..."):
-                # Retrieve relevant documents
-                retriever = st.session_state.vector_store.as_retriever()
-                docs = retriever.invoke(user_input)
+            with st.spinner("Agent is working..."):
                 
-                # Combine documents into context
-                context = "\n\n---\n\n".join(doc.page_content for doc in docs[:5])
+                # Run the agentic workflow
+                result = st.session_state.rag_agent.invoke({
+                    "question": user_input,
+                    "documents": [],
+                    "generation": "",
+                    "steps": []
+                })
                 
-                # Generate answer
-                if not context.strip():
-                    response_text = "I couldn't find relevant information in the documents."
-                else:
-                    # Create prompt for answering
-                    prompt = ChatPromptTemplate.from_messages([
-                        ("system", "Answer the question using ONLY the provided context. Be concise and accurate."),
-                        ("human", "Question: {question}\n\nContext: {context}\n\nAnswer:")
-                    ])
-                    
-                    # Get answer from AI
-                    response = st.session_state.llm.invoke(
-                        prompt.format_messages(question=user_input, context=context)
-                    )
-                    
-                    response_text = response.content
+                # ✨ NEW: Show agent's reasoning process
+                with st.expander("🤖 View Agent Process", expanded=False):
+                    st.markdown("### What the agent did:")
+                    for step in result["steps"]:
+                        st.markdown(f"- {step}")
                 
+                # Display final answer
+                response_text = result["generation"]
                 st.write(response_text)
                 
                 # Save assistant response
